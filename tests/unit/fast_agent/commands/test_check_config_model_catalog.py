@@ -100,3 +100,91 @@ def test_show_models_overview_includes_provider_args_and_named_aliases(
 def test_show_provider_model_catalog_rejects_unknown_provider() -> None:
     with pytest.raises(ValueError, match="Unknown provider"):
         show_provider_model_catalog("not-a-provider")
+
+
+def test_show_check_summary_reports_invalid_effective_model_aliases(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    env_dir = tmp_path / ".fast-agent"
+    env_dir.mkdir(parents=True)
+
+    (tmp_path / "fastagent.config.yaml").write_text("logger:\n  level: warning\n", encoding="utf-8")
+    (env_dir / "fastagent.config.yaml").write_text(
+        "\n".join(
+            [
+                "model_aliases:",
+                "  system: foo=bar",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        show_check_summary(env_dir=env_dir)
+    finally:
+        os.chdir(cwd)
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Effective Config Errors" in output
+    assert "model_aliases" in output
+    assert "Input should be a valid dictionary" in output
+
+
+def test_show_check_summary_reports_malformed_yaml_as_effective_config_error(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    env_dir = tmp_path / ".fast-agent"
+    env_dir.mkdir(parents=True)
+
+    (tmp_path / "fastagent.config.yaml").write_text("logger:\n  level: warning\n", encoding="utf-8")
+    (env_dir / "fastagent.config.yaml").write_text(
+        "\n".join(
+            [
+                "model_aliases:",
+                "  system.code=codexplan?transport=ws",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        show_check_summary(env_dir=env_dir)
+    finally:
+        os.chdir(cwd)
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Config File Issues" in output
+    assert "Fix the YAML syntax errors in your configuration files" in output
+
+
+def test_show_check_summary_resolves_relative_env_dir_from_cwd(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    env_dir = tmp_path / ".fast-agent-alt"
+    (env_dir / "agent-cards").mkdir(parents=True)
+    (env_dir / "agent-cards" / "demo_agent.yaml").write_text(
+        "\n".join(
+            [
+                "name: demo_agent",
+                "model: gpt-4.1-mini",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        show_check_summary(env_dir=Path(".fast-agent-alt"))
+    finally:
+        os.chdir(cwd)
+
+    output = capsys.readouterr().out
+    assert "demo_agent" in output

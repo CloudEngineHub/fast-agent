@@ -29,6 +29,7 @@ from _session_base import (
     session_id_from_cookie,
 )
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.shared.exceptions import McpError
 
 
 class NotebookStore:
@@ -67,9 +68,11 @@ def _require_session(
     cookie = session_cookie_from_meta(ctx.request_context.meta)
     session_id = session_id_from_cookie(cookie)
     if not session_id or store.get(session_id) is None:
-        raise types.McpError(
-            code=SESSION_REQUIRED_ERROR_CODE,
-            message="Session required. Send session/create before using the notebook.",
+        raise McpError(
+            types.ErrorData(
+                code=SESSION_REQUIRED_ERROR_CODE,
+                message="Session required. Send session/create before using the notebook.",
+            )
         )
     return cookie, session_id  # type: ignore[return-value]
 
@@ -97,12 +100,6 @@ def build_server() -> FastMCP:
                     text=f"Note added (#{count}): {text}",
                 )
             ],
-            structuredContent={
-                "action": "append",
-                "note_number": count,
-                "text": text,
-                "session_id": session_id,
-            },
             _meta=cookie_meta(cookie),
         )
 
@@ -123,12 +120,6 @@ def build_server() -> FastMCP:
             text = f"Notebook ({len(notes)} notes):\n" + "\n".join(lines)
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=text)],
-            structuredContent={
-                "action": "read",
-                "session_id": session_id,
-                "notes": notes,
-                "count": len(notes),
-            },
             _meta=cookie_meta(cookie),
         )
 
@@ -147,11 +138,6 @@ def build_server() -> FastMCP:
                     text=f"Notebook cleared ({removed} notes removed).",
                 )
             ],
-            structuredContent={
-                "action": "clear",
-                "session_id": session_id,
-                "removed": removed,
-            },
             _meta=cookie_meta(cookie),
         )
 
@@ -175,7 +161,6 @@ def build_server() -> FastMCP:
                     text=f"Session {session_id}: {count} notes, {info['tool_calls']} calls",
                 )
             ],
-            structuredContent=info,
             _meta=cookie_meta(cookie),
         )
 

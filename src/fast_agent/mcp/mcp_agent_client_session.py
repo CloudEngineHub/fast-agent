@@ -20,12 +20,15 @@ from mcp.types import (
     CallToolRequest,
     CallToolRequestParams,
     CallToolResult,
+    ClientCapabilities,
     ClientRequest,
     EmptyResult,
     GetPromptRequest,
     GetPromptRequestParams,
     GetPromptResult,
     Implementation,
+    InitializeRequest,
+    InitializeRequestParams,
     InitializeResult,
     ListRootsResult,
     PingRequest,
@@ -88,10 +91,32 @@ class _SessionCreateRequest(BaseModel):
     params: _SessionCreateParams | None = None
 
 
+class _SessionListRequest(BaseModel):
+    method: Literal["session/list"] = "session/list"
+    params: RequestParams | None = None
+
+
 class _SessionCreateResult(Result):
     id: str | None = None
     expiry: str | None = None
     data: dict[str, str] | None = None
+
+
+class _SessionListResult(Result):
+    sessions: list[dict[str, Any]] | None = None
+
+
+class _SessionDeleteParams(RequestParams):
+    id: str | None = None
+
+
+class _SessionDeleteRequest(BaseModel):
+    method: Literal["session/delete"] = "session/delete"
+    params: _SessionDeleteParams | None = None
+
+
+class _SessionDeleteResult(Result):
+    deleted: bool | None = None
 
 
 async def list_roots(context: RequestContext[ClientSession, None]) -> ListRootsResult:
@@ -292,6 +317,69 @@ class MCPAgentClientSession(ClientSession, ContextDependent):
                 return title.strip()
         return None
 
+    def set_experimental_session_cookie(self, cookie: dict[str, Any] | None) -> None:
+        """Override the in-memory experimental session cookie for this connection."""
+        if cookie is None:
+            self._experimental_session_cookie = None
+            return
+        self._experimental_session_cookie = dict(cookie)
+
+    async def experimental_session_create(
+        self,
+        *,
+        title: str | None = None,
+        data: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Create a new experimental session and return the active cookie."""
+        resolved_title = title.strip() if isinstance(title, str) and title.strip() else None
+        hints_data: dict[str, str] = dict(data or {})
+        if resolved_title is not None and "title" not in hints_data:
+            hints_data["title"] = resolved_title
+
+        request = _SessionCreateRequest(
+            params=_SessionCreateParams(
+                hints=_SessionCreateHints(label=resolved_title, data=hints_data),
+            )
+        )
+
+        result = await self.send_request(
+            cast("ClientRequest", request),
+            _SessionCreateResult,
+        )
+
+        if result.id:
+            cookie: dict[str, Any] = {"id": result.id}
+            if result.expiry:
+                cookie["expiry"] = result.expiry
+            if result.data:
+                cookie["data"] = dict(result.data)
+            self._experimental_session_cookie = cookie
+
+        return self.experimental_session_cookie
+
+    async def experimental_session_list(self) -> list[dict[str, Any]]:
+        """List experimental sessions advertised by the server (when supported)."""
+        request = _SessionListRequest(params=RequestParams())
+        result = await self.send_request(
+            cast("ClientRequest", request),
+            _SessionListResult,
+        )
+        sessions = result.sessions or []
+        return [dict(item) for item in sessions if isinstance(item, dict)]
+
+    async def experimental_session_delete(self, session_id: str | None = None) -> bool:
+        """Delete an experimental session and return whether deletion succeeded."""
+        merged_meta = self._merge_experimental_session_meta(None)
+        params_kwargs: dict[str, Any] = {"id": session_id}
+        if merged_meta is not None:
+            params_kwargs["_meta"] = RequestParams.Meta(**merged_meta)
+        request = _SessionDeleteRequest(params=_SessionDeleteParams(**params_kwargs))
+        result = await self.send_request(
+            cast("ClientRequest", request),
+            _SessionDeleteResult,
+        )
+        return bool(result.deleted)
+
     async def initialize(self) -> InitializeResult:
         result = await super().initialize()
         capabilities = getattr(result, "capabilities", None)
@@ -347,6 +435,16 @@ class MCPAgentClientSession(ClientSession, ContextDependent):
         self._experimental_session_supported = True
         self._experimental_session_features = tuple(sorted(set(features)))
 
+    def _build_experimental_session_title(self) -> str:
+        """Build a stable default title used for automatic session/create."""
+        agent = self.agent_name.strip() if isinstance(self.agent_name, str) and self.agent_name.strip() else "fast-agent"
+        server = (
+            self.session_server_name.strip()
+            if isinstance(self.session_server_name, str) and self.session_server_name.strip()
+            else "mcp-server"
+        )
+        return f"{agent} · {server}"
+
     async def _maybe_establish_experimental_session(self) -> None:
         if not self._experimental_session_supported:
             return
@@ -355,42 +453,64 @@ class MCPAgentClientSession(ClientSession, ContextDependent):
         if "create" not in self._experimental_session_features:
             return
 
-        title = self._build_experimental_session_title()
-        hints_data = {"title": title}
-        request = _SessionCreateRequest(
-            params=_SessionCreateParams(
-                hints=_SessionCreateHints(label=title, data=hints_data),
-            )
-        )
-
         try:
-            result = await self.send_request(
-                cast("ClientRequest", request),
-                _SessionCreateResult,
-            )
+            await self.experimental_session_create(title=self._build_experimental_session_title())
         except Exception as exc:
             logger.debug(
                 "Failed to establish experimental MCP session",
                 server=self.session_server_name,
                 error=str(exc),
             )
-            return
 
-        # If a server returns a result payload without _meta, retain a minimal cookie.
-        if self._experimental_session_cookie is None and result.id:
-            cookie: dict[str, Any] = {"id": result.id}
-            if result.expiry:
-                cookie["expiry"] = result.expiry
-            if result.data:
-                cookie["data"] = dict(result.data)
-            self._experimental_session_cookie = cookie
+    def _build_advertised_experimental_session_capability(self) -> dict[str, object] | None:
+        cfg = self.server_config
+        if cfg is None or not cfg.experimental_session_advertise:
+            return None
 
-    def _build_experimental_session_title(self) -> str:
-        agent_name = (self.agent_name or "fast-agent").strip() or "fast-agent"
-        server_name = (self.session_server_name or "").strip()
-        if server_name and server_name != agent_name:
-            return f"{agent_name} · {server_name}"
-        return agent_name
+        return {
+            "version": int(cfg.experimental_session_advertise_version),
+        }
+
+    def _maybe_advertise_experimental_session_capability(
+        self, request: ClientRequest
+    ) -> ClientRequest:
+        advertised = self._build_advertised_experimental_session_capability()
+        if advertised is None:
+            return request
+
+        root = getattr(request, "root", None)
+        if not isinstance(root, InitializeRequest):
+            return request
+
+        params = root.params
+        if params is None:
+            return request
+
+        capabilities = params.capabilities
+        existing_experimental = capabilities.experimental
+        experimental_payload: dict[str, dict[str, object]] = {}
+        if isinstance(existing_experimental, dict):
+            for name, value in existing_experimental.items():
+                if isinstance(name, str) and isinstance(value, dict):
+                    experimental_payload[name] = dict(value)
+
+        if _EXPERIMENTAL_SESSION_KEY not in experimental_payload:
+            experimental_payload[_EXPERIMENTAL_SESSION_KEY] = dict(advertised)
+            capabilities = ClientCapabilities(
+                roots=capabilities.roots,
+                sampling=capabilities.sampling,
+                elicitation=capabilities.elicitation,
+                experimental=experimental_payload,
+                tasks=capabilities.tasks,
+            )
+            params = InitializeRequestParams(
+                protocolVersion=params.protocolVersion,
+                capabilities=capabilities,
+                clientInfo=params.clientInfo,
+            )
+            return ClientRequest(InitializeRequest(params=params))
+
+        return request
 
     def _merge_experimental_session_meta(
         self, metadata: dict[str, Any] | None
@@ -422,6 +542,7 @@ class MCPAgentClientSession(ClientSession, ContextDependent):
         metadata: MessageMetadata | None = None,
         progress_callback: ProgressFnT | None = None,
     ) -> ReceiveResultT:
+        request = self._maybe_advertise_experimental_session_capability(request)
         logger.debug("send_request: request=", data=request.model_dump())
         request_id = getattr(self, "_request_id", None)
         is_ping_request = self._is_ping_request(request)

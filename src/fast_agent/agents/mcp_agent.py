@@ -54,6 +54,7 @@ from fast_agent.mcp.common import (
     get_server_name,
     is_namespaced_name,
 )
+from fast_agent.mcp.experimental_session_client import ExperimentalSessionClient
 from fast_agent.mcp.mcp_aggregator import (
     MCPAggregator,
     MCPAttachOptions,
@@ -344,6 +345,11 @@ class McpAgent(ABC, ToolAgent):
         return self._aggregator
 
     @property
+    def experimental_sessions(self) -> ExperimentalSessionClient:
+        """Expose focused experimental-session cookie controls for this agent."""
+        return self._aggregator.experimental_sessions
+
+    @property
     def instruction_template(self) -> str:
         """The original instruction template with placeholders."""
         return self._instruction_template or ""
@@ -401,6 +407,44 @@ class McpAgent(ABC, ToolAgent):
             self._record_warning(warning_message, surface="startup_once")
 
         self.logger.debug(f"Applied instruction templates for agent {self._name}")
+
+    @staticmethod
+    def _resolve_shell_working_directory(path: Path) -> Path:
+        """Resolve a configured shell working directory for validation messages."""
+        if path.is_absolute():
+            return path.resolve()
+        return (Path.cwd() / path).resolve()
+
+    def _warn_if_invalid_shell_working_directory(self, working_directory: Path | None) -> None:
+        """Emit a startup warning when a configured shell cwd is missing/invalid."""
+        if working_directory is None:
+            return
+
+        resolved = self._resolve_shell_working_directory(working_directory)
+        if not resolved.exists():
+            self._record_warning(
+                " ".join(
+                    [
+                        f"[dim]Agent '{self._name}' has shell cwd that does not exist: {resolved}.",
+                        f"Configured cwd: {working_directory}.",
+                        "Shell commands will fail until this path exists.[/dim]",
+                    ]
+                ),
+                surface="startup_once",
+            )
+            return
+
+        if not resolved.is_dir():
+            self._record_warning(
+                " ".join(
+                    [
+                        f"[dim]Agent '{self._name}' has shell cwd that is not a directory: {resolved}.",
+                        f"Configured cwd: {working_directory}.",
+                        "Shell commands will fail until this points to a directory.[/dim]",
+                    ]
+                ),
+                surface="startup_once",
+            )
 
     def set_skill_manifests(self, manifests: Sequence[SkillManifest]) -> None:
         self._skill_manifests = list(manifests)
@@ -484,6 +528,8 @@ class McpAgent(ABC, ToolAgent):
     ) -> None:
         if activation_reason is not None and self._external_runtime is not None:
             return
+
+        self._warn_if_invalid_shell_working_directory(working_directory)
 
         timeout_seconds, warning_interval_seconds, output_byte_limit = (
             self._resolve_shell_runtime_settings()

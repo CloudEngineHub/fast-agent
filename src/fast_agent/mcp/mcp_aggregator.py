@@ -41,6 +41,7 @@ from fast_agent.core.logging.progress_payloads import build_progress_payload
 from fast_agent.core.model_resolution import HARDCODED_DEFAULT_MODEL, resolve_model_spec
 from fast_agent.event_progress import ProgressAction
 from fast_agent.mcp.common import SEP, create_namespaced_name, is_namespaced_name
+from fast_agent.mcp.experimental_session_client import ExperimentalSessionClient
 from fast_agent.mcp.gen_client import gen_client
 from fast_agent.mcp.interfaces import ServerRegistryProtocol
 from fast_agent.mcp.mcp_agent_client_session import MCPAgentClientSession
@@ -79,6 +80,8 @@ def _progress_trace(message: str) -> None:
 # Define type variables for the generalized method
 T = TypeVar("T")
 R = TypeVar("R")
+
+SESSION_REQUIRED_ERROR_CODE = -32002
 
 
 class NamespacedTool(BaseModel):
@@ -317,6 +320,9 @@ class MCPAggregator(ContextDependent):
         # Track discovered Skybridge configurations per server
         self._skybridge_configs: dict[str, SkybridgeServerConfig] = {}
 
+        # Focused API for experimental mcp/session cookie controls.
+        self.experimental_sessions = ExperimentalSessionClient(self)
+
     def _require_context(self) -> "Context":
         if self.context is None:
             raise RuntimeError("MCPAggregator requires a context")
@@ -471,7 +477,7 @@ class MCPAggregator(ContextDependent):
                 elicitation_handler = self.config.elicitation_handler
                 api_key = self.config.api_key
 
-            return MCPAgentClientSession(
+            session = MCPAgentClientSession(
                 read_stream,
                 write_stream,
                 read_timeout,
@@ -483,6 +489,12 @@ class MCPAggregator(ContextDependent):
                 tool_list_changed_callback=self._handle_tool_list_changed,
                 **kwargs,  # Pass through any additional kwargs like server_config
             )
+
+            bootstrap_cookie = self.experimental_sessions.bootstrap_cookie_for_server(server_name)
+            if isinstance(bootstrap_cookie, dict):
+                session.set_experimental_session_cookie(bootstrap_cookie)
+
+            return session
 
         return session_factory
 
@@ -1484,9 +1496,18 @@ class MCPAggregator(ContextDependent):
                 # For call_tool method, check if we need to add progress_callback
                 if method_name == "call_tool" and progress_callback:
                     # The call_tool method signature includes progress_callback parameter
-                    return await method(progress_callback=progress_callback, **kwargs)
+                    result = await method(progress_callback=progress_callback, **kwargs)
                 else:
-                    return await method(**(kwargs or {}))
+                    result = await method(**(kwargs or {}))
+
+                if method_name == "call_tool":
+                    self._maybe_mark_rejected_session_cookie_from_tool_result(
+                        server_name=server_name,
+                        client=client,
+                        result=result,
+                    )
+
+                return result
             except ConnectionError:
                 # Let ConnectionError pass through for reconnection logic
                 raise
@@ -1494,6 +1515,7 @@ class MCPAggregator(ContextDependent):
                 # Let ServerSessionTerminatedError pass through for reconnection logic
                 raise
             except Exception as e:
+                self._maybe_mark_rejected_session_cookie(server_name=server_name, client=client, exc=e)
                 error_msg = (
                     f"Failed to {method_name} '{operation_name}' on server '{server_name}': {e}"
                 )
@@ -1570,6 +1592,123 @@ class MCPAggregator(ContextDependent):
                 return error_factory(error_msg)
             raise RuntimeError(error_msg)
         return result
+
+    @staticmethod
+    def _is_session_required_error(exc: Exception) -> bool:
+        from mcp.shared.exceptions import McpError
+
+        if not isinstance(exc, McpError):
+            return False
+
+        error_data = getattr(exc, "error", None)
+        if error_data is None:
+            return False
+
+        return getattr(error_data, "code", None) == SESSION_REQUIRED_ERROR_CODE
+
+    def _maybe_mark_rejected_session_cookie(
+        self,
+        *,
+        server_name: str,
+        client: ClientSession,
+        exc: Exception,
+    ) -> None:
+        if not self._is_session_required_error(exc):
+            return
+
+        error_data = getattr(exc, "error", None)
+        reason = getattr(error_data, "message", None)
+        reason_text = str(reason) if isinstance(reason, str) and reason else None
+
+        self._invalidate_session_cookie(
+            server_name=server_name,
+            client=client,
+            reason=reason_text,
+        )
+
+    def _maybe_mark_rejected_session_cookie_from_tool_result(
+        self,
+        *,
+        server_name: str,
+        client: ClientSession,
+        result: Any,
+    ) -> None:
+        if not self._is_session_required_tool_error_result(result):
+            return
+
+        self._invalidate_session_cookie(
+            server_name=server_name,
+            client=client,
+            reason=self._extract_tool_error_text(result),
+        )
+
+    @staticmethod
+    def _extract_tool_error_text(result: Any) -> str | None:
+        content = getattr(result, "content", None)
+        if not isinstance(content, list):
+            return None
+
+        for item in content:
+            if isinstance(item, TextContent):
+                text = item.text.strip()
+                if text:
+                    return text
+                continue
+
+            text = getattr(item, "text", None)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+
+        return None
+
+    @classmethod
+    def _is_session_required_tool_error_result(cls, result: Any) -> bool:
+        if not bool(getattr(result, "isError", False)):
+            return False
+
+        text = cls._extract_tool_error_text(result)
+        if not text:
+            return False
+
+        normalized = text.lower()
+        return "session required" in normalized or "send session/create" in normalized
+
+    def _invalidate_session_cookie(
+        self,
+        *,
+        server_name: str,
+        client: ClientSession,
+        reason: str | None,
+    ) -> None:
+        session_id = getattr(client, "experimental_session_id", None)
+        if not isinstance(session_id, str) or not session_id:
+            return
+
+        clear_cookie = getattr(client, "set_experimental_session_cookie", None)
+        if callable(clear_cookie):
+            try:
+                clear_cookie(None)
+            except Exception:
+                logger.debug(
+                    "Failed clearing rejected experimental session cookie",
+                    server_name=server_name,
+                    session_id=session_id,
+                    exc_info=True,
+                )
+
+        try:
+            self.experimental_sessions.mark_cookie_invalidated(
+                server_name,
+                session_id=session_id,
+                reason=reason,
+            )
+        except Exception:
+            logger.debug(
+                "Failed marking experimental session cookie invalidated",
+                server_name=server_name,
+                session_id=session_id,
+                exc_info=True,
+            )
 
     async def _handle_connection_error(
         self,
