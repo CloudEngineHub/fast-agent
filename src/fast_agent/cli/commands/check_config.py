@@ -1,5 +1,6 @@
 """Command to check FastAgent configuration."""
 
+import json
 import os
 import platform
 import sys
@@ -691,6 +692,151 @@ def show_provider_model_catalog(
 
     if all_row_count:
         console.print(all_models_table)
+
+
+def _split_model_specs(raw_models: str) -> list[str]:
+    return [chunk.strip() for chunk in raw_models.split(",") if chunk.strip()]
+
+
+def _build_model_aliases(config_payload: dict[str, Any] | None) -> dict[str, str]:
+    aliases = ModelFactory.get_runtime_aliases()
+
+    if not isinstance(config_payload, dict):
+        return aliases
+
+    alias_tree = config_payload.get("model_aliases")
+    if not isinstance(alias_tree, dict):
+        return aliases
+
+    for namespace, entries in alias_tree.items():
+        if not isinstance(namespace, str) or not isinstance(entries, dict):
+            continue
+        for alias_name, model_spec in entries.items():
+            if not isinstance(alias_name, str) or not isinstance(model_spec, str):
+                continue
+            token = f"${namespace}.{alias_name}"
+            aliases[token] = model_spec
+            aliases[f"{namespace}.{alias_name}"] = model_spec
+
+    return aliases
+
+
+def show_model_secret_requirements(
+    models: str,
+    *,
+    env_dir: Path | None = None,
+    json_output: bool = False,
+) -> None:
+    """Show provider + secret-env requirements for one or more model specs."""
+
+    specs = _split_model_specs(models)
+    if not specs:
+        raise ValueError("No model values provided. Pass one or more model specs.")
+
+    config_files = find_config_files(Path.cwd(), env_dir=env_dir)
+    config_summary = get_config_summary(config_files["config"])
+    secrets_summary = get_secrets_summary(config_files["secrets"])
+    api_keys = check_api_keys(secrets_summary, config_summary)
+    config_payload = _load_catalog_config(env_dir)
+    aliases = _build_model_aliases(config_payload)
+
+    resolved_entries: list[dict[str, Any]] = []
+    unique_secret_envs: list[str] = []
+
+    for spec in specs:
+        try:
+            parsed = ModelFactory.parse_model_string(spec, aliases=aliases)
+            provider = parsed.provider
+            provider_key = provider.config_name
+            env_var = ProviderKeyManager.get_env_key_name(provider_key)
+            provider_status = api_keys.get(provider_key, {})
+            env_present = bool(provider_status.get("env"))
+            config_present = bool(provider_status.get("config"))
+
+            resolved_entries.append(
+                {
+                    "input": spec,
+                    "resolved_model": parsed.model_name,
+                    "provider": provider_key,
+                    "provider_display": provider.display_name,
+                    "required_env": env_var,
+                    "local_env_present": env_present,
+                    "local_config_present": config_present,
+                }
+            )
+
+            if env_var not in unique_secret_envs:
+                unique_secret_envs.append(env_var)
+
+        except Exception as exc:
+            resolved_entries.append(
+                {
+                    "input": spec,
+                    "error": str(exc),
+                }
+            )
+
+    payload = {
+        "models": specs,
+        "resolved": resolved_entries,
+        "candidate_secret_env_vars": unique_secret_envs,
+        "safety_rule": (
+            "Pass secret names only; never pass secret values via CLI arguments. "
+            "Use secure job secret references (for example --secrets ENV_VAR_NAME)."
+        ),
+    }
+
+    if json_output:
+        console.print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _print_section_header("Model secret requirements", color="blue")
+
+    results_table = Table(show_header=True, box=None)
+    results_table.add_column("Input", style="cyan", header_style="bold bright_white")
+    results_table.add_column("Provider", style="white", header_style="bold bright_white")
+    results_table.add_column("Resolved Model", style="green", header_style="bold bright_white")
+    results_table.add_column("Required Env", style="magenta", header_style="bold bright_white")
+    results_table.add_column("Local Key Status", style="yellow", header_style="bold bright_white")
+
+    for entry in resolved_entries:
+        if entry.get("error"):
+            results_table.add_row(
+                entry.get("input", "?"),
+                "[red]unresolved[/red]",
+                "[red]-[/red]",
+                "[red]-[/red]",
+                f"[red]{entry['error']}[/red]",
+            )
+            continue
+
+        local_bits: list[str] = []
+        if entry.get("local_env_present"):
+            local_bits.append("env")
+        if entry.get("local_config_present"):
+            local_bits.append("config")
+        local_status = " + ".join(local_bits) if local_bits else "missing"
+
+        results_table.add_row(
+            entry["input"],
+            entry["provider_display"],
+            entry["resolved_model"],
+            entry["required_env"],
+            local_status,
+        )
+
+    console.print(results_table)
+
+    if unique_secret_envs:
+        console.print()
+        console.print("[bold]Candidate secret env var names:[/bold] " + ", ".join(unique_secret_envs))
+
+    console.print()
+    console.print(
+        "[bold yellow]IMPORTANT:[/bold yellow] Never pass secret values through command arguments. "
+        "Forward secret [bold]names[/bold] only via secure secret stores (for example: "
+        "[cyan]hf jobs ... --secrets OPENAI_API_KEY[/cyan])."
+    )
 
 
 def _effective_environment_override(
@@ -1445,9 +1591,33 @@ def models(
         "--all",
         help="Show all known models after curated entries (requires a provider argument)",
     ),
+    for_model: str | None = typer.Option(
+        None,
+        "--for-model",
+        help="Resolve one or more model specs (comma-separated) to provider and secret env requirements.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit JSON output (supported with --for-model).",
+    ),
 ) -> None:
     """Show model catalog provider guidance or provider-specific model entries."""
     env_dir = _context_env_dir(ctx)
+
+    if for_model is not None:
+        if provider is not None:
+            raise typer.BadParameter("Do not pass a provider argument with --for-model.")
+        if all_models:
+            raise typer.BadParameter("Do not combine --all with --for-model.")
+        try:
+            show_model_secret_requirements(for_model, env_dir=env_dir, json_output=json_output)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--for-model") from exc
+        return
+
+    if json_output:
+        raise typer.BadParameter("--json currently requires --for-model.")
 
     if provider is None:
         if all_models:

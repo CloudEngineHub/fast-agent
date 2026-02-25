@@ -5,6 +5,7 @@ import pytest
 
 from fast_agent.cli.commands.check_config import (
     show_check_summary,
+    show_model_secret_requirements,
     show_models_overview,
     show_provider_model_catalog,
 )
@@ -188,3 +189,23 @@ def test_show_check_summary_resolves_relative_env_dir_from_cwd(
 
     output = capsys.readouterr().out
     assert "demo_agent" in output
+
+
+def test_show_model_secret_requirements_plain_output_includes_safety_instruction(capsys) -> None:
+    show_model_secret_requirements("sonnet")
+
+    output = capsys.readouterr().out
+    assert "Model secret requirements" in output
+    assert "ANTHROPIC_API_KEY" in output
+    assert "IMPORTANT:" in output
+    assert "Never pass secret values" in output
+
+
+def test_show_model_secret_requirements_json_output_lists_candidate_env_vars(capsys) -> None:
+    show_model_secret_requirements("sonnet,kimi", json_output=True)
+
+    output = capsys.readouterr().out
+    assert '"candidate_secret_env_vars"' in output
+    assert "ANTHROPIC_API_KEY" in output
+    assert "HF_TOKEN" in output
+    assert '"safety_rule"' in output
