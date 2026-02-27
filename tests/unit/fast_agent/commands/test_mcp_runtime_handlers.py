@@ -60,12 +60,12 @@ class _SessionClientStub:
             SessionJarEntry(
                 server_name="demo",
                 server_identity="demo-server",
-                cookie={"id": "sess-123", "data": {"title": "Demo"}},
+                cookie={"sessionId": "sess-123", "data": {"title": "Demo"}},
                 cookies=(
                     {
                         "id": "sess-123",
                         "title": "Demo",
-                        "expiry": "2026-02-23T12:34:56Z",
+                        "expiresAt": "2026-02-23T12:34:56Z",
                         "updatedAt": "2026-02-23T10:00:00Z",
                         "active": True,
                     },
@@ -92,8 +92,12 @@ class _SessionClientStub:
     async def list_sessions(self, server_identifier: str | None):
         del server_identifier
         return "demo", [
-            {"id": "sess-123", "data": {"title": "Demo"}, "expiry": "2026-02-23T12:34:56Z"},
-            {"id": "sess-abc"},
+            {
+                "sessionId": "sess-123",
+                "data": {"title": "Demo"},
+                "expiresAt": "2026-02-23T12:34:56Z",
+            },
+            {"sessionId": "sess-abc"},
         ]
 
     async def list_server_cookies(self, server_identifier: str | None):
@@ -102,7 +106,7 @@ class _SessionClientStub:
             {
                 "id": "sess-123",
                 "title": "Demo",
-                "expiry": "2026-02-23T12:34:56Z",
+                "expiresAt": "2026-02-23T12:34:56Z",
                 "updatedAt": "2026-02-23T10:00:00Z",
                 "active": True,
             },
@@ -117,11 +121,14 @@ class _SessionClientStub:
 
     async def create_session(self, server_identifier: str | None, *, title: str | None = None):
         del server_identifier
-        return "demo", {"id": "sess-created", "data": {"title": title or "Demo"}}
+        return "demo", {
+            "sessionId": "sess-created",
+            "data": {"title": title or "Demo"},
+        }
 
     async def resume_session(self, server_identifier: str | None, *, session_id: str):
         del server_identifier
-        return "demo", {"id": session_id}
+        return "demo", {"sessionId": session_id}
 
     async def clear_cookie(self, server_identifier: str | None):
         del server_identifier
@@ -782,7 +789,7 @@ async def test_handle_mcp_session_jar_renders_compact_rows() -> None:
     assert "demo-server" in message_text
     assert "connected" in message_text
     assert "active: sess-123" in message_text
-    assert "v2" in message_text
+    assert "sessions" in message_text
     assert "cookies:" in message_text
 
 
@@ -837,9 +844,9 @@ async def test_handle_mcp_session_new_and_clear_all() -> None:
     new_text = "\n".join(str(msg.text) for msg in new_outcome.messages)
     clear_text = "\n".join(str(msg.text) for msg in clear_outcome.messages)
 
-    assert "Created experimental session" in new_text
+    assert "Created MCP session" in new_text
     assert "sess-created" in new_text
-    assert "Cleared experimental session cookies" in clear_text
+    assert "Cleared MCP session entries" in clear_text
 
 
 @pytest.mark.asyncio

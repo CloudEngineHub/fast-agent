@@ -435,7 +435,7 @@ def _resolve_session_client(ctx, *, agent_name: str) -> SessionClientProtocol:
     ):
         return cast("SessionClientProtocol", fallback)
 
-    raise RuntimeError(f"Agent '{agent_name}' does not expose experimental session controls.")
+    raise RuntimeError(f"Agent '{agent_name}' does not expose MCP session controls.")
 
 
 def _render_cookie(cookie: dict[str, Any] | None) -> str:
@@ -459,7 +459,7 @@ def _render_jar_entry(entry: SessionJarEntry) -> str:
         f"features={features}\n"
         f"title={title}\n"
         f"last_used_id={entry.last_used_id or '-'}\n"
-        f"cookie=\n{_render_cookie(entry.cookie)}"
+        f"session=\n{_render_cookie(entry.cookie)}"
     )
 
 
@@ -474,7 +474,7 @@ def _truncate_cell(value: str, max_len: int = 28) -> str:
 def _extract_cookie_id(cookie: dict[str, Any] | None) -> str | None:
     if not isinstance(cookie, dict):
         return None
-    raw_id = cookie.get("id")
+    raw_id = cookie.get("sessionId")
     if isinstance(raw_id, str) and raw_id:
         return raw_id
     return None
@@ -495,7 +495,7 @@ def _extract_session_title(payload: dict[str, Any]) -> str:
 
 
 def _extract_session_expiry(payload: dict[str, Any]) -> str:
-    expiry = payload.get("expiry")
+    expiry = payload.get("expiresAt")
     if isinstance(expiry, str) and expiry:
         return expiry
     return "-"
@@ -514,7 +514,7 @@ def _extract_session_created(payload: dict[str, Any]) -> str:
             if isinstance(raw, str) and raw:
                 return raw
 
-    session_id = payload.get("id")
+    session_id = payload.get("sessionId")
     if isinstance(session_id, str):
         match = re.match(r"^(\d{10})-[A-Za-z0-9]+$", session_id)
         if match:
@@ -564,11 +564,13 @@ def _session_suffix(session_id: str | None, *, digits: int = 5) -> str:
     return f"…{session_id[-digits:]}"
 
 
-def _experimental_version(entry: SessionJarEntry) -> str:
+def _session_capability_label(entry: SessionJarEntry) -> str:
     if entry.supported is not True:
-        return "-"
+        return "unknown"
     feature_set = {feature.strip().lower() for feature in entry.features}
-    return "v2" if {"create", "delete", "list"}.issubset(feature_set) else "v1"
+    if {"create", "delete"}.issubset(feature_set):
+        return "sessions"
+    return "partial"
 
 
 def _render_jar_table(entries: list[SessionJarEntry]) -> Text:
@@ -600,7 +602,7 @@ def _render_jar_table(entries: list[SessionJarEntry]) -> Text:
                 grouped_entries[0],
             ),
         )
-        version = _experimental_version(primary)
+        capability = _session_capability_label(primary)
 
         active_summary: dict[str, Any] | None = None
         if primary.cookies:
@@ -628,8 +630,8 @@ def _render_jar_table(entries: list[SessionJarEntry]) -> Text:
         expiry = "-"
         if isinstance(primary.cookie, dict):
             created = _format_expiry_compact(_extract_session_created(primary.cookie))
-            raw_expiry = primary.cookie.get("expiry")
-            expiry = _format_expiry_compact(raw_expiry if isinstance(raw_expiry, str) else None)
+            raw_expiry = _extract_session_expiry(primary.cookie)
+            expiry = _format_expiry_compact(raw_expiry if raw_expiry != "-" else None)
         if isinstance(active_summary, dict):
             raw_expiry = active_summary.get("expiry")
             active_expiry = _format_expiry_compact(
@@ -648,7 +650,7 @@ def _render_jar_table(entries: list[SessionJarEntry]) -> Text:
         connection_state = (
             "connected" if any(e.connected is True for e in grouped_entries) else "disconnected"
         )
-        version_display = version if version != "-" else "unknown"
+        capability_display = capability
 
         summary_title = active_summary.get("title") if isinstance(active_summary, dict) else None
         title_raw = (
@@ -681,7 +683,10 @@ def _render_jar_table(entries: list[SessionJarEntry]) -> Text:
             style="bright_green" if connection_state == "connected" else "dim",
         )
         header.append(" • ", style="dim")
-        header.append(version_display, style="cyan" if version_display != "unknown" else "dim")
+        header.append(
+            capability_display,
+            style="cyan" if capability_display != "unknown" else "dim",
+        )
         content.append_text(header)
         content.append("\n")
 
@@ -720,7 +725,7 @@ def _render_server_cookies_table(
     content.append("\n\n")
 
     if not cookies:
-        content.append("No session cookies found for this server.", style="dim")
+        content.append("No sessions found for this server.", style="dim")
         content.append("\n")
     else:
         width = _resolve_terminal_width()
@@ -839,7 +844,7 @@ def _render_single_cookie_result(
 
 def _render_clear_all_result(servers: list[str]) -> Text:
     content = Text()
-    content.append("Cleared experimental session cookies:", style="bold")
+    content.append("Cleared MCP session entries:", style="bold")
     content.append("\n\n")
 
     index_width = max(2, len(str(len(servers))))
@@ -934,7 +939,7 @@ async def handle_mcp_session(
             server_name, cookie = await session_client.create_session(server_identity, title=title)
             outcome.add_message(
                 _render_single_cookie_result(
-                    heading=f"Created experimental session for {server_name}.",
+                    heading=f"Created MCP session for {server_name}.",
                     server_name=server_name,
                     cookie=cookie,
                 ),
@@ -952,7 +957,7 @@ async def handle_mcp_session(
             )
             outcome.add_message(
                 _render_single_cookie_result(
-                    heading=f"Selected experimental session cookie for {server_name}.",
+                    heading=f"Selected MCP session for {server_name}.",
                     server_name=server_name,
                     cookie=cookie,
                 ),
@@ -982,7 +987,7 @@ async def handle_mcp_session(
             server_name = await session_client.clear_cookie(server_identity)
             outcome.add_message(
                 _render_single_cookie_result(
-                    heading=f"Cleared experimental session cookie for {server_name}.",
+                    heading=f"Cleared MCP session entry for {server_name}.",
                     server_name=server_name,
                     cookie=None,
                 ),

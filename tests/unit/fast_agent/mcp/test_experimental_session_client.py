@@ -26,15 +26,15 @@ class _SessionStub:
     async def experimental_session_create(self, *, title: str | None = None, data=None):
         del data
         self.experimental_session_cookie = {
-            "id": "sess-created",
+            "sessionId": "sess-created",
             "data": {"title": title or "default"},
         }
         return dict(self.experimental_session_cookie)
 
     async def experimental_session_list(self):
         return [
-            {"id": "sess-created", "data": {"title": "created"}},
-            {"id": "sess-alt", "data": {"title": "alt"}},
+            {"sessionId": "sess-created", "data": {"title": "created"}},
+            {"sessionId": "sess-alt", "data": {"title": "alt"}},
         ]
 
 
@@ -60,21 +60,21 @@ class _AggregatorStub:
             "alpha": ServerStatus(
                 server_name="alpha",
                 implementation_name="demo-alpha",
-                session_cookie={"id": "sess-a"},
+                session_cookie={"sessionId": "sess-a"},
                 experimental_session_supported=True,
                 experimental_session_features=["create", "list"],
             ),
             "beta": ServerStatus(
                 server_name="beta",
                 implementation_name="demo-beta",
-                session_cookie={"id": "sess-b"},
+                session_cookie={"sessionId": "sess-b"},
                 experimental_session_supported=True,
                 experimental_session_features=["create", "list"],
             ),
         }
         self._sessions = {
-            "alpha": _SessionStub({"id": "sess-a"}),
-            "beta": _SessionStub({"id": "sess-b"}),
+            "alpha": _SessionStub({"sessionId": "sess-a"}),
+            "beta": _SessionStub({"sessionId": "sess-b"}),
         }
         self._manager = _ManagerStub(self._sessions)
 
@@ -106,7 +106,10 @@ async def test_resume_session_prefers_listed_cookie_payload() -> None:
     server_name, cookie = await client.resume_session("alpha", session_id="sess-created")
 
     assert server_name == "alpha"
-    assert cookie == {"id": "sess-created", "data": {"title": "created"}}
+    assert cookie == {
+        "sessionId": "sess-created",
+        "data": {"title": "created"},
+    }
 
 
 @pytest.mark.asyncio
@@ -114,9 +117,18 @@ async def test_clear_all_cookies_clears_each_server_entry() -> None:
     aggregator = _AggregatorStub()
     store = InMemorySessionCookieStore(
         {
-            "demo-alpha": {"server_name": "alpha", "cookies": [{"id": "sess-a", "cookie": {"id": "sess-a"}}]},
-            "demo-beta": {"server_name": "beta", "cookies": [{"id": "sess-b", "cookie": {"id": "sess-b"}}]},
-            "stale-server": {"server_name": "stale", "cookies": [{"id": "sess-stale", "cookie": {"id": "sess-stale"}}]},
+            "demo-alpha": {
+                "server_name": "alpha",
+                "cookies": [{"id": "sess-a", "cookie": {"sessionId": "sess-a"}}],
+            },
+            "demo-beta": {
+                "server_name": "beta",
+                "cookies": [{"id": "sess-b", "cookie": {"sessionId": "sess-b"}}],
+            },
+            "stale-server": {
+                "server_name": "stale",
+                "cookies": [{"id": "sess-stale", "cookie": {"sessionId": "sess-stale"}}],
+            },
         }
     )
     client = ExperimentalSessionClient(aggregator, cookie_store=store)
@@ -138,7 +150,9 @@ async def test_get_cookie_hydrates_session_from_store_when_missing() -> None:
             "demo-alpha": {
                 "server_name": "alpha",
                 "last_used_id": "sess-stored",
-                "cookies": [{"id": "sess-stored", "cookie": {"id": "sess-stored"}}],
+                "cookies": [
+                    {"id": "sess-stored", "cookie": {"sessionId": "sess-stored"}}
+                ],
             }
         }
     )
@@ -146,8 +160,10 @@ async def test_get_cookie_hydrates_session_from_store_when_missing() -> None:
 
     cookie = await client.get_cookie("alpha")
 
-    assert cookie == {"id": "sess-stored"}
-    assert aggregator._sessions["alpha"].experimental_session_cookie == {"id": "sess-stored"}
+    assert cookie == {"sessionId": "sess-stored"}
+    assert aggregator._sessions["alpha"].experimental_session_cookie == {
+        "sessionId": "sess-stored",
+    }
 
 
 @pytest.mark.asyncio
@@ -158,10 +174,16 @@ async def test_create_session_persists_cookie_to_store() -> None:
 
     _server_name, cookie = await client.create_session("alpha", title="Demo")
 
-    assert cookie == {"id": "sess-created", "data": {"title": "Demo"}}
+    assert cookie == {
+        "sessionId": "sess-created",
+        "data": {"title": "Demo"},
+    }
     payload = store.load()["demo-alpha"]
     assert payload["last_used_id"] == "sess-created"
-    assert payload["cookies"][0]["cookie"] == {"id": "sess-created", "data": {"title": "Demo"}}
+    assert payload["cookies"][0]["cookie"] == {
+        "sessionId": "sess-created",
+        "data": {"title": "Demo"},
+    }
 
 
 @pytest.mark.asyncio
@@ -191,13 +213,13 @@ def test_json_file_cookie_store_round_trip(tmp_path: Path) -> None:
     jar = tmp_path / "mcp-cookie.json"
     store = JsonFileSessionCookieStore(jar)
 
-    store.save({"alpha": {"id": "sess-a"}})
+    store.save({"alpha": {"sessionId": "sess-a"}})
 
     with open(jar, encoding="utf-8") as handle:
         payload = json.load(handle)
-    assert payload["version"] == 2
-    assert payload["cookies"] == {"alpha": {"id": "sess-a"}}
-    assert store.load() == {"alpha": {"id": "sess-a"}}
+    assert payload["version"] == 3
+    assert payload["cookies"] == {"alpha": {"sessionId": "sess-a"}}
+    assert store.load() == {"alpha": {"sessionId": "sess-a"}}
 
 
 def test_json_file_cookie_store_tolerates_invalid_json(tmp_path: Path) -> None:
@@ -219,12 +241,12 @@ def test_bootstrap_cookie_for_server_prefers_identity_record() -> None:
                 "cookies": [
                     {
                         "id": "sess-old",
-                        "cookie": {"id": "sess-old"},
+                        "cookie": {"sessionId": "sess-old"},
                         "updatedAt": "2026-02-20T00:00:00Z",
                     },
                     {
                         "id": "sess-new",
-                        "cookie": {"id": "sess-new", "data": {"title": "Latest"}},
+                        "cookie": {"sessionId": "sess-new", "data": {"title": "Latest"}},
                         "updatedAt": "2026-02-24T00:00:00Z",
                     },
                 ],
@@ -235,7 +257,10 @@ def test_bootstrap_cookie_for_server_prefers_identity_record() -> None:
 
     cookie = client.bootstrap_cookie_for_server("alpha")
 
-    assert cookie == {"id": "sess-new", "data": {"title": "Latest"}}
+    assert cookie == {
+        "sessionId": "sess-new",
+        "data": {"title": "Latest"},
+    }
 
 
 def test_mark_cookie_invalidated_clears_last_used_and_skips_bootstrap() -> None:
@@ -248,12 +273,12 @@ def test_mark_cookie_invalidated_clears_last_used_and_skips_bootstrap() -> None:
                 "cookies": [
                     {
                         "id": "sess-rejected",
-                        "cookie": {"id": "sess-rejected"},
+                        "cookie": {"sessionId": "sess-rejected"},
                         "updatedAt": "2026-02-24T00:00:00Z",
                     },
                     {
                         "id": "sess-fallback",
-                        "cookie": {"id": "sess-fallback"},
+                        "cookie": {"sessionId": "sess-fallback"},
                         "updatedAt": "2026-02-23T00:00:00Z",
                     },
                 ],
@@ -277,7 +302,9 @@ def test_mark_cookie_invalidated_clears_last_used_and_skips_bootstrap() -> None:
     assert isinstance(rejected_entry.get("invalidatedAt"), str)
     assert rejected_entry.get("invalidatedReason") == "Session required"
 
-    assert client.bootstrap_cookie_for_server("alpha") == {"id": "sess-fallback"}
+    assert client.bootstrap_cookie_for_server("alpha") == {
+        "sessionId": "sess-fallback",
+    }
 
 
 @pytest.mark.asyncio
@@ -297,7 +324,7 @@ async def test_list_server_cookies_includes_invalidation_flag() -> None:
                 "cookies": [
                     {
                         "id": "sess-invalid",
-                        "cookie": {"id": "sess-invalid"},
+                        "cookie": {"sessionId": "sess-invalid"},
                         "updatedAt": "2026-02-24T00:00:00Z",
                         "invalidatedAt": "2026-02-24T01:00:00Z",
                         "invalidatedReason": "Session required",

@@ -611,11 +611,11 @@ def command_completions(
 
         if not parts:
             subcommands = {
-                "list": "List cookies for a server identity and highlight active cookie",
-                "jar": "Show all stored cookies grouped by server identity",
-                "new": "Create a new experimental session",
-                "use": "Switch active cookie to an existing session id",
-                "clear": "Clear one cookie or the full jar",
+                "list": "List sessions for a server identity and highlight active session",
+                "jar": "Show all stored sessions grouped by server identity",
+                "new": "Create a new MCP session",
+                "use": "Switch active session to an existing session id",
+                "clear": "Clear one session entry or the full local store",
             }
             return list(completer._complete_subcommands(parts, remainder, subcommands))
 
@@ -678,7 +678,7 @@ def command_completions(
                                 completion_text,
                                 start_position=0,
                                 display=display,
-                                display_meta=f"{state} cookie | {meta_text}",
+                        display_meta=f"{state} session | {meta_text}",
                             )
                         )
                     return completions
@@ -724,7 +724,7 @@ def command_completions(
                             completion_text,
                             start_position=-len(partial),
                             display=display,
-                            display_meta=f"{state} cookie | {meta_text}",
+                            display_meta=f"{state} session | {meta_text}",
                         )
                     )
 
@@ -754,7 +754,7 @@ def command_completions(
                     start_position=-len(cookie_partial),
                     display=cookie_id,
                     display_meta=(
-                        f"{'active' if is_active else 'stored'} cookie"
+                        f"{'active' if is_active else 'stored'} session"
                         + (f" · {title}" if isinstance(title, str) and title else "")
                     ),
                 )
@@ -769,7 +769,7 @@ def command_completions(
                     option,
                     start_position=-len(partial),
                     display=option,
-                    display_meta=("clear full jar" if option == "--all" else "attached mcp server"),
+                    display_meta=("clear full session store" if option == "--all" else "attached mcp server"),
                 )
                 for option in options
                 if option.lower().startswith(partial.lower())
@@ -783,7 +783,7 @@ def command_completions(
             "connect": "Connect a new MCP server",
             "disconnect": "Disconnect an attached MCP server",
             "reconnect": "Reconnect an attached MCP server",
-            "session": "Inspect and control experimental session cookies",
+            "session": "Inspect and control MCP data-layer sessions",
         }
         return list(completer._complete_subcommands(parts, remainder, subcommands))
 

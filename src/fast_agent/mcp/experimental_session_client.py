@@ -16,6 +16,11 @@ if TYPE_CHECKING:
     from fast_agent.mcp.mcp_aggregator import ServerStatus
 
 
+_COOKIE_JAR_VERSION = 3
+_SESSION_ID_KEY = "sessionId"
+_EXPIRY_KEY = "expiresAt"
+
+
 class SessionAggregatorProtocol(Protocol):
     connection_persistence: bool
 
@@ -56,7 +61,7 @@ class InMemorySessionCookieStore:
 
 
 class JsonFileSessionCookieStore:
-    """Very small JSON-backed cookie jar for experimental session state."""
+    """Very small JSON-backed local store for MCP session metadata."""
 
     def __init__(self, path: Path | str) -> None:
         self._path = Path(path)
@@ -80,7 +85,7 @@ class JsonFileSessionCookieStore:
             return {}
 
         version = payload.get("version")
-        if version != 2:
+        if version not in {2, _COOKIE_JAR_VERSION}:
             return {}
 
         raw_cookies: Any = payload.get("cookies")
@@ -99,7 +104,7 @@ class JsonFileSessionCookieStore:
             for key, value in cookies.items()
             if isinstance(key, str) and isinstance(value, dict)
         }
-        payload = {"version": 2, "cookies": safe_cookies}
+        payload = {"version": _COOKIE_JAR_VERSION, "cookies": safe_cookies}
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
@@ -119,7 +124,7 @@ class JsonFileSessionCookieStore:
 
 @dataclass(frozen=True, slots=True)
 class SessionJarEntry:
-    """Snapshot of one server's experimental session state."""
+    """Snapshot of one server's MCP session state."""
 
     server_name: str
     server_identity: str | None
@@ -157,7 +162,11 @@ class ExperimentalSessionClient:
                 server_name=server_name,
                 server_identity=status.implementation_name,
             )
-            status_cookie = status.session_cookie if isinstance(status.session_cookie, dict) else None
+            status_cookie = (
+                self._normalize_cookie(status.session_cookie)
+                if isinstance(status.session_cookie, dict)
+                else None
+            )
             if status_cookie is None:
                 status_cookie = self._cookie_from_status_session(status)
             if status_cookie is not None:
@@ -235,7 +244,7 @@ class ExperimentalSessionClient:
         server_identity = self._status_identity(status_map, server_name)
         session = await self._get_live_session(server_name)
         self._hydrate_session_cookie_from_store(server_name, session, server_identity=server_identity)
-        cookie = session.experimental_session_cookie
+        cookie = self._normalize_cookie(session.experimental_session_cookie)
         if isinstance(cookie, dict):
             self._persist_server_cookie(
                 server_name,
@@ -276,13 +285,14 @@ class ExperimentalSessionClient:
         session = await self._get_live_session(server_name)
         self._hydrate_session_cookie_from_store(server_name, session, server_identity=server_identity)
         cookie = await session.experimental_session_create(title=title)
+        normalized_cookie = self._normalize_cookie(cookie)
         self._persist_server_cookie(
             server_name,
-            cookie,
+            normalized_cookie,
             mark_last_used=True,
             server_identity=server_identity,
         )
-        return server_name, cookie
+        return server_name, normalized_cookie
 
     async def list_sessions(self, server_identifier: str | None) -> tuple[str, list[dict[str, Any]]]:
         server_name = await self.resolve_server_name(server_identifier)
@@ -291,7 +301,12 @@ class ExperimentalSessionClient:
         session = await self._get_live_session(server_name)
         self._hydrate_session_cookie_from_store(server_name, session, server_identity=server_identity)
         sessions = await session.experimental_session_list()
-        return server_name, sessions
+        normalized_sessions: list[dict[str, Any]] = []
+        for item in sessions:
+            normalized = self._normalize_cookie(item)
+            if normalized is not None:
+                normalized_sessions.append(normalized)
+        return server_name, normalized_sessions
 
     async def resume_session(
         self,
@@ -312,15 +327,16 @@ class ExperimentalSessionClient:
             available_sessions = []
 
         for item in available_sessions:
-            if not isinstance(item, dict):
+            normalized = self._normalize_cookie(item)
+            if normalized is None:
                 continue
-            raw_id = item.get("id")
-            if isinstance(raw_id, str) and raw_id == session_id:
-                selected_cookie = dict(item)
+            raw_id = self._cookie_session_id(normalized)
+            if raw_id == session_id:
+                selected_cookie = normalized
                 break
 
         if selected_cookie is None:
-            selected_cookie = {"id": session_id}
+            selected_cookie = {_SESSION_ID_KEY: session_id}
 
         session.set_experimental_session_cookie(selected_cookie)
         self._persist_server_cookie(
@@ -360,8 +376,9 @@ class ExperimentalSessionClient:
             server_identity=identity,
         )
 
-        if isinstance(cookie, dict):
-            self._upsert_cookie(record, cookie, mark_last_used=mark_last_used)
+        normalized_cookie = self._normalize_cookie(cookie)
+        if isinstance(normalized_cookie, dict):
+            self._upsert_cookie(record, normalized_cookie, mark_last_used=mark_last_used)
             snapshot[store_key] = record
         else:
             snapshot.pop(store_key, None)
@@ -423,7 +440,11 @@ class ExperimentalSessionClient:
         record: dict[str, Any],
     ) -> SessionJarEntry:
         features = tuple(status.experimental_session_features or [])
-        status_cookie = dict(status.session_cookie) if isinstance(status.session_cookie, dict) else None
+        status_cookie = (
+            ExperimentalSessionClient._normalize_cookie(status.session_cookie)
+            if isinstance(status.session_cookie, dict)
+            else None
+        )
         cookie = status_cookie if status_cookie is not None else ExperimentalSessionClient._select_active_cookie(record)
         title = status.session_title
         if not title:
@@ -460,7 +481,11 @@ class ExperimentalSessionClient:
             server_name=server_name,
             server_identity=identity,
         )
-        status_cookie = status.session_cookie if status and isinstance(status.session_cookie, dict) else None
+        status_cookie = (
+            self._normalize_cookie(status.session_cookie)
+            if status and isinstance(status.session_cookie, dict)
+            else None
+        )
         if status_cookie is None:
             status_cookie = self._cookie_from_status_session(status)
         if status_cookie is not None:
@@ -519,7 +544,7 @@ class ExperimentalSessionClient:
             break
 
         if not changed:
-            cookie = {"id": session_id}
+            cookie = {_SESSION_ID_KEY: session_id}
             entry: dict[str, Any] = {
                 "id": session_id,
                 "cookie": cookie,
@@ -547,7 +572,7 @@ class ExperimentalSessionClient:
         """Return a best-effort last-used cookie for a server before connect/initialize.
 
         This is intentionally sync so the MCP session factory can use it to hydrate
-        a new ``MCPAgentClientSession`` and avoid unnecessary ``session/create`` calls
+        a new ``MCPAgentClientSession`` and avoid unnecessary ``sessions/create`` calls
         when a recent cookie is already available in the local jar.
         """
         snapshot = self._load_store()
@@ -615,8 +640,21 @@ class ExperimentalSessionClient:
         normalized: list[dict[str, Any]] = []
         if isinstance(cookies, list):
             for item in cookies:
-                if isinstance(item, dict):
-                    normalized.append(dict(item))
+                if not isinstance(item, dict):
+                    continue
+                normalized_item = dict(item)
+                payload = normalized_item.get("cookie")
+                normalized_payload = (
+                    ExperimentalSessionClient._normalize_cookie(payload)
+                    if isinstance(payload, dict)
+                    else None
+                )
+                if normalized_payload is not None:
+                    normalized_item["cookie"] = normalized_payload
+                    session_id = ExperimentalSessionClient._cookie_session_id(normalized_payload)
+                    if isinstance(session_id, str) and session_id:
+                        normalized_item["id"] = session_id
+                normalized.append(normalized_item)
         return {
             "server_name": raw.get("server_name") or server_name,
             "server_identity": raw.get("server_identity") or server_identity,
@@ -643,8 +681,8 @@ class ExperimentalSessionClient:
         *,
         mark_last_used: bool,
     ) -> None:
-        session_id = cookie.get("id")
-        if not isinstance(session_id, str) or not session_id:
+        session_id = cls._cookie_session_id(cookie)
+        if not session_id:
             return
         cookies = record.get("cookies")
         if not isinstance(cookies, list):
@@ -736,7 +774,11 @@ class ExperimentalSessionClient:
                 {
                     "id": session_id,
                     "title": cls._extract_cookie_title(payload),
-                    "expiry": payload.get("expiry") if isinstance(payload.get("expiry"), str) else None,
+                    "expiry": (
+                        payload.get(_EXPIRY_KEY)
+                        if isinstance(payload.get(_EXPIRY_KEY), str)
+                        else None
+                    ),
                     "updatedAt": item.get("updatedAt") if isinstance(item.get("updatedAt"), str) else None,
                     "active": session_id == active_id,
                     "invalidated": invalidated_at is not None,
@@ -779,6 +821,11 @@ class ExperimentalSessionClient:
     def _extract_cookie_title(cookie: dict[str, Any] | None) -> str | None:
         if not isinstance(cookie, dict):
             return None
+
+        direct_title = cookie.get("title")
+        if isinstance(direct_title, str) and direct_title.strip():
+            return direct_title.strip()
+
         data = cookie.get("data")
         if isinstance(data, dict):
             title = data.get("title") or data.get("label")
@@ -797,11 +844,31 @@ class ExperimentalSessionClient:
             not isinstance(session_id, str)
             or not session_id
             or session_id == "local"
-            or not session_id.startswith("sess-")
         ):
             return None
-        cookie: dict[str, Any] = {"id": session_id}
+        cookie: dict[str, Any] = {_SESSION_ID_KEY: session_id}
         title = getattr(status, "session_title", None)
         if isinstance(title, str) and title.strip():
             cookie["data"] = {"title": title.strip()}
-        return cookie
+        return cls._normalize_cookie(cookie)
+
+    @staticmethod
+    def _cookie_session_id(cookie: dict[str, Any]) -> str | None:
+        raw = cookie.get(_SESSION_ID_KEY)
+        if isinstance(raw, str) and raw:
+            return raw
+        return None
+
+    @classmethod
+    def _normalize_cookie(cls, cookie: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(cookie, dict):
+            return None
+
+        normalized = dict(cookie)
+        session_id = cls._cookie_session_id(normalized)
+        if not session_id:
+            return None
+
+        normalized[_SESSION_ID_KEY] = session_id
+
+        return normalized

@@ -1,4 +1,4 @@
-"""End-to-end demo of all experimental session servers.
+"""End-to-end demo of all MCP data-layer session servers.
 
 No LLM API key required. Runs each server demo as a separate subprocess
 to avoid Python 3.13/uvloop child-watcher limitations with multiple
@@ -131,17 +131,16 @@ async def demo_notebook() -> None:
 
 async def demo_hashcheck() -> None:
     await _run_demo(
-        "DEMO 3: hashcheck (per-session hash KV store)",
+        "DEMO 3: hashcheck (per-session hash set)",
         "hashcheck",
         "hashcheck_server.py",
         [
-            ("store 'password'='secret123'", "hashcheck_store", {"key": "password", "text": "secret123"}),
-            ("store 'api-key'='sk-abc'", "hashcheck_store", {"key": "api-key", "text": "sk-abc"}),
+            ("store 'secret123'", "hashcheck_store", {"text": "secret123"}),
+            ("store 'sk-abc'", "hashcheck_store", {"text": "sk-abc"}),
             ("list stored hashes", "hashcheck_list", {}),
-            ("verify password (correct)", "hashcheck_verify", {"key": "password", "text": "secret123"}),
-            ("verify password (WRONG)", "hashcheck_verify", {"key": "password", "text": "wrong-password"}),
-            ("verify missing key", "hashcheck_verify", {"key": "nonexistent", "text": "anything"}),
-            ("delete api-key", "hashcheck_delete", {"key": "api-key"}),
+            ("verify secret123 (correct)", "hashcheck_verify", {"text": "secret123"}),
+            ("verify wrong-password (missing)", "hashcheck_verify", {"text": "wrong-password"}),
+            ("delete sk-abc", "hashcheck_delete", {"text": "sk-abc"}),
             ("list after delete", "hashcheck_list", {}),
         ],
     )
@@ -154,6 +153,7 @@ async def demo_selective() -> None:
         "selective_session_server.py",
         [
             ("public echo (no session required)", "public_echo", {"text": "hello from public"}),
+            ("session counter get (with active session)", "session_counter_get", {}),
             ("reset current session", "session_reset", {}),
             (
                 "session counter get (expected error: session missing)",
