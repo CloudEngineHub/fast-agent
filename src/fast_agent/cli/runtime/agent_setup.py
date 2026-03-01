@@ -459,7 +459,7 @@ async def run_agent_request(request: AgentRunRequest) -> None:
         config_path=request.config_path,
         ignore_unknown_args=True,
         parse_cli_args=False,
-        quiet=request.mode == "serve",
+        quiet=request.mode == "serve" or request.quiet,
         skills_directory=request.skills_directory,
         environment_dir=request.environment_dir,
     )

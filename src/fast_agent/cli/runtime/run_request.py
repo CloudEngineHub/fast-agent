@@ -62,6 +62,7 @@ class AgentRunRequest:
     permissions_enabled: bool
     reload: bool
     watch: bool
+    quiet: bool = False
     missing_shell_cwd_policy: Literal["ask", "create", "warn", "error"] | None = None
 
     def __post_init__(self) -> None:
@@ -113,5 +114,6 @@ class AgentRunRequest:
             "permissions_enabled": self.permissions_enabled,
             "reload": self.reload,
             "watch": self.watch,
+            "quiet": self.quiet,
             "missing_shell_cwd_policy": self.missing_shell_cwd_policy,
         }

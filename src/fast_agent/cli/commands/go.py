@@ -123,6 +123,7 @@ async def _run_agent(
     permissions_enabled: bool = True,
     reload: bool = False,
     watch: bool = False,
+    quiet: bool = False,
     missing_shell_cwd_policy: Literal["ask", "create", "warn", "error"] | None = None,
 ) -> None:
     """Compatibility wrapper for async request execution."""
@@ -157,6 +158,7 @@ async def _run_agent(
         permissions_enabled=permissions_enabled,
         reload=reload,
         watch=watch,
+        quiet=quiet,
         missing_shell_cwd_policy=missing_shell_cwd_policy,
     )
     await run_agent_request(request)
@@ -195,6 +197,7 @@ def run_async_agent(
     permissions_enabled: bool = True,
     reload: bool = False,
     watch: bool = False,
+    quiet: bool = False,
     missing_shell_cwd_policy: Literal["ask", "create", "warn", "error"] | None = None,
 ) -> None:
     """Run the async agent function with proper loop handling."""
@@ -232,6 +235,7 @@ def run_async_agent(
             permissions_enabled=permissions_enabled,
             reload=reload,
             watch=watch,
+            quiet=quiet,
             missing_shell_cwd_policy=missing_shell_cwd_policy,
         )
         request = AgentRunRequest(**run_kwargs)
@@ -292,6 +296,12 @@ def go(
         help="Enable manual AgentCard reloads (/reload)",
     ),
     watch: bool = CommonAgentOptions.watch(),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Disable progress/chat/tool output and print only direct command output",
+    ),
 ) -> None:
     """Run an interactive agent directly from the command line."""
     if os.getenv(FAST_AGENT_SHELL_CHILD_ENV):
@@ -332,5 +342,6 @@ def go(
         instance_scope="shared",
         reload=reload,
         watch=watch,
+        quiet=quiet,
     )
     run_request(request)

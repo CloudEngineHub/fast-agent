@@ -290,6 +290,7 @@ def build_agent_run_request(
     permissions_enabled: bool,
     reload: bool,
     watch: bool,
+    quiet: bool = False,
     missing_shell_cwd_policy: Literal["ask", "create", "warn", "error"] | None = None,
     force_smart: bool = False,
     noenv: bool = False,
@@ -365,6 +366,7 @@ def build_agent_run_request(
         permissions_enabled=effective_permissions_enabled,
         reload=reload,
         watch=watch,
+        quiet=quiet,
         missing_shell_cwd_policy=missing_shell_cwd_policy,
     )
 
@@ -401,6 +403,7 @@ def build_run_agent_kwargs(
     permissions_enabled: bool,
     reload: bool,
     watch: bool,
+    quiet: bool = False,
     missing_shell_cwd_policy: Literal["ask", "create", "warn", "error"] | None = None,
     force_smart: bool = False,
     noenv: bool = False,
@@ -438,6 +441,7 @@ def build_run_agent_kwargs(
         permissions_enabled=permissions_enabled,
         reload=reload,
         watch=watch,
+        quiet=quiet,
         missing_shell_cwd_policy=missing_shell_cwd_policy,
     )
     return request.to_agent_setup_kwargs()
@@ -476,6 +480,7 @@ def build_command_run_request(
     permissions_enabled: bool = True,
     reload: bool = False,
     watch: bool = False,
+    quiet: bool = False,
     missing_shell_cwd_policy: Literal["ask", "create", "warn", "error"] | None = None,
     force_smart: bool = False,
     noenv: bool = False,
@@ -528,5 +533,6 @@ def build_command_run_request(
         permissions_enabled=permissions_enabled,
         reload=reload,
         watch=watch,
+        quiet=quiet,
         missing_shell_cwd_policy=missing_shell_cwd_policy,
     )
