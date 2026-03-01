@@ -695,7 +695,7 @@ class SessionManager:
 
     def resume_session(
         self, agent: AgentProtocol, name: str | None = None
-    ) -> tuple[Session, pathlib.Path | None] | None:
+    ) -> tuple[Session, pathlib.Path | None, list[str]] | None:
         """Resume a session and load its latest history into the agent."""
         session_name = self._resolve_session_name(name)
         session = self.load_latest_session() if session_name is None else self.load_session(session_name)
@@ -703,12 +703,15 @@ class SessionManager:
             return None
 
         history_path = session.latest_history_path(getattr(agent, "name", None))
+        notices: list[str] = []
         if history_path and history_path.exists():
             from fast_agent.mcp.prompts.prompt_load import load_history_into_agent
 
-            load_history_into_agent(agent, history_path)
+            notice = load_history_into_agent(agent, history_path)
+            if notice:
+                notices.append(notice)
 
-        return session, history_path
+        return session, history_path, notices
 
     def resume_session_agents(
         self,
@@ -725,6 +728,7 @@ class SessionManager:
         history_map = session.info.metadata.get("last_history_by_agent")
         loaded: dict[str, pathlib.Path] = {}
         missing_agents: list[str] = []
+        notices: list[str] = []
 
         if isinstance(history_map, dict) and history_map:
             for agent_name, filename in history_map.items():
@@ -738,7 +742,9 @@ class SessionManager:
                     from fast_agent.mcp.prompts.prompt_load import load_history_into_agent
 
                     try:
-                        load_history_into_agent(agents[agent_name], history_path)
+                        notice = load_history_into_agent(agents[agent_name], history_path)
+                        if notice:
+                            notices.append(notice)
                         loaded[agent_name] = history_path
                     except Exception as exc:
                         logger.warning(
@@ -767,7 +773,9 @@ class SessionManager:
                     from fast_agent.mcp.prompts.prompt_load import load_history_into_agent
 
                     try:
-                        load_history_into_agent(fallback_agent, history_path)
+                        notice = load_history_into_agent(fallback_agent, history_path)
+                        if notice:
+                            notices.append(notice)
                         loaded[fallback_agent.name] = history_path
                     except Exception as exc:
                         logger.warning(
@@ -790,6 +798,7 @@ class SessionManager:
             session=session,
             loaded=loaded,
             missing_agents=missing_agents,
+            usage_notices=notices,
         )
 
     def fork_current_session(self, title: str | None = None) -> Session | None:

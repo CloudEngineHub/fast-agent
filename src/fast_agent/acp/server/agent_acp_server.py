@@ -1765,12 +1765,19 @@ class AgentACPServer(ACPAgent):
         session = result.session
         loaded = result.loaded
         missing_agents = result.missing_agents
+        usage_notices = result.usage_notices
         if missing_agents:
             logger.warning(
                 "Missing agents while loading session",
                 name="acp_load_session_missing_agents",
                 session_id=session_id,
                 missing_agents=missing_agents,
+            )
+        for usage_notice in usage_notices:
+            logger.warning(
+                usage_notice,
+                name="acp_load_session_usage_unavailable",
+                session_id=session_id,
             )
 
         current_agent = session_state.current_agent_name

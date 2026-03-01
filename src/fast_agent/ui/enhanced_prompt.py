@@ -94,7 +94,7 @@ def set_last_copyable_output(output: str) -> None:
     _sync_to_session()
 
 
-def queue_startup_notice(notice: str) -> None:
+def queue_startup_notice(notice: object) -> None:
     from fast_agent.ui.prompt.session import queue_startup_notice as _queue_startup_notice
 
     _sync_to_session()
@@ -107,13 +107,21 @@ def queue_startup_markdown_notice(
     *,
     title: str | None = None,
     style: str | None = None,
+    right_info: str | None = None,
+    agent_name: str | None = None,
 ) -> None:
     from fast_agent.ui.prompt.session import (
         queue_startup_markdown_notice as _queue_startup_markdown_notice,
     )
 
     _sync_to_session()
-    _queue_startup_markdown_notice(text, title=title, style=style)
+    _queue_startup_markdown_notice(
+        text,
+        title=title,
+        style=style,
+        right_info=right_info,
+        agent_name=agent_name,
+    )
     _sync_from_session()
 
 

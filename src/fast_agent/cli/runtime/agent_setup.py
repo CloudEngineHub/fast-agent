@@ -185,7 +185,6 @@ async def _resume_session_if_requested(agent_app, request: AgentRunRequest) -> N
     loaded = result.loaded
     missing_agents = result.missing_agents
     usage_notices = result.usage_notices
-
     session_time = session.info.last_activity.strftime("%y-%m-%d %H:%M")
     resume_notice = (
         f"[dim]Resumed session[/dim] [cyan]{session.info.name}[/cyan] [dim]({session_time})[/dim]"
@@ -243,7 +242,12 @@ async def _resume_session_if_requested(agent_app, request: AgentRunRequest) -> N
     if assistant_text:
         if interactive_notice:
             queue_startup_notice("[dim]Last assistant message:[/dim]")
-            queue_startup_markdown_notice(assistant_text)
+            queue_startup_markdown_notice(
+                assistant_text,
+                title="Last assistant message",
+                right_info="session",
+                agent_name=getattr(preview_agent, "name", None),
+            )
         else:
             typer.echo("Last assistant message:", err=True)
             typer.echo(assistant_text, err=True)
