@@ -331,10 +331,10 @@ async def test_muse_glimmer_manual_stream_reassembles_together_tool_fragments() 
         "hf.deepseek-ai/DeepSeek-V4-Flash-0731:together",
     ),
 )
-def test_deepseek_unprofiled_route_does_not_invent_wire_contract(model: str) -> None:
+def test_deepseek_routes_fall_back_to_model_profile(model: str) -> None:
     request = _factory_request(model)
 
-    assert "reasoning_effort" not in request
+    assert request["reasoning_effort"] == "max"
 
 
 def test_deepseek_profile_uses_configured_hf_backend() -> None:
@@ -411,7 +411,7 @@ def test_deepseek_constructor_endpoint_uses_custom_route_profile() -> None:
         "https://router.huggingface.co:443/v1",
     ),
 )
-def test_equivalent_huggingface_router_urls_do_not_use_custom_profile(
+def test_equivalent_huggingface_router_urls_use_model_profile(
     base_url: str,
 ) -> None:
     llm = HuggingFaceLLM(
@@ -427,7 +427,7 @@ def test_equivalent_huggingface_router_urls_do_not_use_custom_profile(
     )
 
     assert request["model"] == "deepseek-ai/DeepSeek-V4-Flash-0731"
-    assert "reasoning_effort" not in request
+    assert request["reasoning_effort"] == "max"
 
 
 def test_deepseek_custom_endpoint_does_not_override_explicit_router_backend() -> None:
@@ -444,7 +444,7 @@ def test_deepseek_custom_endpoint_does_not_override_explicit_router_backend() ->
     )
 
     assert request["model"] == "deepseek-ai/DeepSeek-V4-Flash-0731:together"
-    assert "reasoning_effort" not in request
+    assert request["reasoning_effort"] == "max"
 
 
 def test_deepseek_custom_endpoint_uses_nested_hf_base_url_environment(
@@ -500,3 +500,67 @@ def test_hf_route_profiles_preserve_route_specific_cleanup(
     assert isinstance(extra_body, dict)
     assert set(extra_body) == expected_extra_body_keys
     assert extra_body.get("preserved") is True
+
+
+@pytest.mark.parametrize("model", ("GLM-5.3", "GLM-5.3-Flash"))
+@pytest.mark.parametrize("backend", ("", ":together", ":deepinfra"))
+@pytest.mark.parametrize(
+    "query, effort", (("", "max"), ("?reasoning=low", "low"), ("?reasoning=high", "high"))
+)
+def test_glm_53_routes_fall_back_to_model_profile(
+    model: str, backend: str, query: str, effort: str
+) -> None:
+    wire_model = f"zai-org/{model}{backend}"
+    request = _factory_request(f"hf.{wire_model}{query}")
+
+    assert request["model"] == wire_model
+    assert request["reasoning_effort"] == effort
+    assert request["extra_body"] == {"thinking": {"type": "enabled", "clear_thinking": False}}
+
+
+@pytest.mark.parametrize("model", ("GLM-5.3", "GLM-5.3-Flash"))
+def test_glm_53_hf_keeps_required_reasoning_enabled(model: str) -> None:
+    request = _factory_request(f"hf.zai-org/{model}:together?reasoning=none")
+
+    assert request["reasoning_effort"] == "max"
+
+
+@pytest.mark.parametrize(
+    "backend, limit",
+    (("baseten", 384_000), ("scaleway", 32_768), ("deepinfra", 393_216), ("together", 393_216)),
+)
+@pytest.mark.parametrize("query", ("", "?max_tokens=393216"))
+def test_deepseek_route_output_limit(backend: str, limit: int, query: str) -> None:
+    request = _factory_request(f"hf.deepseek-ai/DeepSeek-V4-Flash-0731:{backend}{query}")
+
+    assert request["max_tokens"] == limit
+    assert request["reasoning_effort"] == "max"
+
+
+@pytest.mark.parametrize("max_tokens, expected", ((128, 128), (393_216, 384_000)))
+def test_baseten_output_limit_applies_to_per_request_overrides(
+    max_tokens: int, expected: int
+) -> None:
+    llm = HuggingFaceLLM(
+        context=Context(config=Settings()),
+        model="deepseek-ai/DeepSeek-V4-Flash-0731:baseten",
+    )
+    assert llm.default_request_params.max_tokens == 384_000
+    params = llm.default_request_params.model_copy(update={"max_tokens": max_tokens})
+    request = llm._prepare_api_request([{"role": "user", "content": "hello"}], None, params)
+
+    assert request["max_tokens"] == expected
+    assert params.max_tokens == max_tokens
+
+
+def test_configured_baseten_backend_uses_route_output_limit() -> None:
+    llm = HuggingFaceLLM(
+        context=Context(config=Settings(hf=HuggingFaceSettings(default_provider="baseten"))),
+        model="deepseek-ai/DeepSeek-V4-Flash-0731",
+    )
+    request = llm._prepare_api_request(
+        [{"role": "user", "content": "hello"}], None, llm.default_request_params
+    )
+
+    assert request["model"] == "deepseek-ai/DeepSeek-V4-Flash-0731:baseten"
+    assert request["max_tokens"] == 384_000
